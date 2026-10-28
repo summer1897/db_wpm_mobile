@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.local-data/
+artifacts/
+unpackage/
+.DS_Store
+*.keystore
+*.p12
+*.mobileprovision
+.env.local
+.env.*.local
+.vscode
+.local-data
+package-lock.json
+pnpm-lock.yaml

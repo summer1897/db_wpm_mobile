@@ -1,0 +1,49 @@
+{
+  "name": "wind-field-uniapp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:lan": "node scripts/dev.mjs --lan",
+    "preview": "npm run build:h5 && node scripts/dev.mjs --preview",
+    "preview:lan": "npm run build:h5 && node scripts/dev.mjs --preview --lan",
+    "dev:h5": "uni --host 127.0.0.1 --port 5188",
+    "dev:mp-weixin": "node scripts/platform.mjs dev mp-weixin",
+    "build": "npm run typecheck && npm run build:h5 && npm run build:mp-weixin",
+    "build:h5": "node scripts/build-web.mjs",
+    "build:mp-weixin": "node scripts/platform.mjs build mp-weixin",
+    "build:app": "node scripts/platform.mjs build app",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
+    "test:ui": "node tests/browser.mjs",
+    "test:launch": "node --test tests/launcher.mjs",
+    "format": "prettier --write src scripts tests server *.json *.ts *.md index.html .vscode/*.json",
+    "server": "node scripts/services.mjs",
+    "assets": "node scripts/assets.mjs"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-5020620260917001",
+    "@dcloudio/uni-app-plus": "3.0.0-5020620260917001",
+    "@dcloudio/uni-components": "3.0.0-5020620260917001",
+    "@dcloudio/uni-h5": "3.0.0-5020620260917001",
+    "@dcloudio/uni-mp-weixin": "3.0.0-5020620260917001",
+    "busboy": "1.6.0",
+    "vue": "3.4.21",
+    "vue-i18n": "9.14.5"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "3.4.31",
+    "@dcloudio/uni-cli-shared": "3.0.0-5020620260917001",
+    "@dcloudio/vite-plugin-uni": "3.0.0-5020620260917001",
+    "@types/node": "22.15.30",
+    "@vue/tsconfig": "0.5.1",
+    "fake-indexeddb": "6.2.5",
+    "prettier": "3.6.2",
+    "sharp": "0.34.5",
+    "tsx": "4.21.0",
+    "typescript": "5.6.3",
+    "vite": "5.2.8",
+    "vue-tsc": "2.2.12"
+  }
+}

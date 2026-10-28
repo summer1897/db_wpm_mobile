@@ -1,0 +1,100 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/index",
+      "style": { "navigationStyle": "custom", "navigationBarTitleText": "登录" }
+    },
+    {
+      "path": "pages/home/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "现场工作台"
+      }
+    },
+    {
+      "path": "pages/records/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "施工记录",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/profile/index",
+      "style": { "navigationStyle": "custom", "navigationBarTitleText": "我的" }
+    },
+    {
+      "path": "pages/report/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "填写施工记录"
+      }
+    },
+    {
+      "path": "pages/detail/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "记录详情"
+      }
+    },
+    {
+      "path": "pages/settings/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "项目服务"
+      }
+    },
+    {
+      "path": "pages/ledger/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "项目工作台账",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/users/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "用户信息",
+        "enablePullDownRefresh": true
+      }
+    }
+  ],
+  "globalStyle": {
+    "backgroundColor": "#f2f5f2",
+    "navigationBarTextStyle": "black",
+    "navigationBarBackgroundColor": "#f2f5f2",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "color": "#7c8c85",
+    "selectedColor": "#206953",
+    "backgroundColor": "#fbfcfa",
+    "borderStyle": "white",
+    "height": "60px",
+    "fontSize": "12px",
+    "iconWidth": "24px",
+    "spacing": "5px",
+    "list": [
+      {
+        "pagePath": "pages/home/index",
+        "text": "工作台",
+        "iconPath": "static/home.png",
+        "selectedIconPath": "static/home-active.png"
+      },
+      {
+        "pagePath": "pages/records/index",
+        "text": "施工记录",
+        "iconPath": "static/records.png",
+        "selectedIconPath": "static/records-active.png"
+      },
+      {
+        "pagePath": "pages/profile/index",
+        "text": "我的",
+        "iconPath": "static/user.png",
+        "selectedIconPath": "static/user-active.png"
+      }
+    ]
+  }
+}
