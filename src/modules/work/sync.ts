@@ -1,36 +1,101 @@
-import { belongs, validateRecord, type Connection, type Photo, type WorkRecord } from './domain';
+import {
+  belongs,
+  isPending,
+  validateEntry,
+  type Attachment,
+  type Connection,
+  type Entry,
+} from './domain';
 import type { WorkRepository } from './repository';
+
 export interface SyncApi {
   connection(): Promise<Connection>;
-  photo(
-    row: WorkRecord,
-    photo: Photo,
+  upload(
+    entry: Entry,
+    attachment: Attachment,
     progress: (value: number) => void,
-  ): Promise<{ id: string; scope: string }>;
-  submit(row: WorkRecord): Promise<{
+  ): Promise<{ id: string; reused: boolean }>;
+  submit(entry: Entry): Promise<{
     id: string;
     serverId: string;
+    code: string;
     createdAt: string;
     reviewStatus: string;
+    reviewStatusCode: string;
   }>;
   active(): boolean;
 }
-/** 只消费用户明确提交的队列。每张照片和最终回执分别持久化，超时重试仍复用原编号。 */
-export class UploadQueue {
+
+/** 批量上传进度：界面上「已上传 N / 共 M 条、还剩哪几条」都读这里 */
+export interface BatchState {
+  running: boolean;
+  paused: boolean;
+  total: number;
+  done: number;
+  failed: number;
+  currentId: string;
+  currentLabel: string;
+  /** 当前这一条的百分比 */
+  currentPercent: number;
+  /** 整批的百分比 */
+  percent: number;
+  startedAt: number;
+  finishedAt: number;
+  message: string;
+}
+
+export const emptyBatch = (): BatchState => ({
+  running: false,
+  paused: false,
+  total: 0,
+  done: 0,
+  failed: 0,
+  currentId: '',
+  currentLabel: '',
+  currentPercent: 0,
+  percent: 0,
+  startedAt: 0,
+  finishedAt: 0,
+  message: '',
+});
+
+export interface RunnerHooks {
+  changed: () => void;
+  progress: (id: string, value: number) => void;
+  batch: (state: BatchState) => void;
+}
+
+/**
+ * 上传队列：只消费用户明确提交的任务（queued / failed）。
+ * 每条记录的附件先传、回执落库、再提交记录；任一环节失败只影响当前这条，
+ * 其余任务继续，形成「批量上传 + 逐条进度」。
+ */
+export class UploadRunner {
   private running?: Promise<void>;
-  private stopped = false;
+  private stopRequested = false;
+  batch = emptyBatch();
+
   constructor(
     private repo: WorkRepository,
     private api: SyncApi,
-    private changed: () => void,
-    private progress: (id: string, value: number) => void,
+    private hooks: RunnerHooks,
   ) {}
-  stop() {
-    this.stopped = true;
+
+  private publish(patch: Partial<BatchState> = {}) {
+    this.batch = { ...this.batch, ...patch };
+    this.hooks.batch({ ...this.batch });
   }
+
+  /** 暂停：当前这条传完后停下，已完成的附件不会重传 */
+  pause() {
+    this.stopRequested = true;
+    this.publish({ paused: true, running: Boolean(this.running) });
+  }
+
+  /** 入队单条 */
   async enqueue(id: string, owner: string, instance: string) {
     await this.repo.update(id, owner, instance, (row) => {
-      const message = validateRecord(row);
+      const message = validateEntry(row);
       if (message) throw new Error(message);
       if (row.status === 'submitted' || row.status === 'uploading')
         throw new Error('该记录已提交或正在上传');
@@ -38,91 +103,194 @@ export class UploadQueue {
       row.error = '';
       row.nextRetryAt = 0;
     });
-    this.changed();
+    this.hooks.changed();
   }
-  run(owner: string, instance: string, online: boolean, force = false) {
+
+  /** 入队多条（批量上传入口）：校验通过的才入队，返回被跳过的记录及原因 */
+  async enqueueMany(ids: string[], owner: string, instance: string) {
+    const skipped: string[] = [];
+    await this.repo.mutate((state) => {
+      for (const id of ids) {
+        const row = state.entries.find((item) => item.id === id && belongs(item, owner, instance));
+        if (!row) continue;
+        const message = validateEntry(row);
+        if (message) {
+          row.error = message;
+          skipped.push(id);
+          continue;
+        }
+        if (row.status === 'submitted' || row.status === 'uploading') continue;
+        row.status = 'queued';
+        row.error = '';
+        row.nextRetryAt = 0;
+      }
+    });
+    this.hooks.changed();
+    return skipped;
+  }
+
+  /**
+   * 执行上传。ids 为空时处理当前账号下全部待上传记录（批量）。
+   * force=true 表示忽略退避时间（用户手动点「立即上传」）。
+   */
+  run(owner: string, instance: string, online: boolean, options: { ids?: string[]; force?: boolean } = {}) {
     if (this.running) return this.running;
     if (!online || !this.api.active()) return Promise.resolve();
-    this.stopped = false;
-    this.running = this.execute(owner, instance, force).finally(() => {
-      this.running = undefined;
-      this.changed();
-    });
+    this.stopRequested = false;
+    this.running = this.execute(owner, instance, options)
+      .catch(() => {
+        /* 单条失败已记录在记录上，批量流程不中断 */
+      })
+      .finally(() => {
+        this.running = undefined;
+        this.publish({
+          running: false,
+          currentId: '',
+          currentLabel: '',
+          currentPercent: 0,
+          percent: this.batch.total
+            ? Math.round(((this.batch.done + this.batch.failed) / this.batch.total) * 100)
+            : 100,
+          finishedAt: Date.now(),
+          message: this.stopRequested ? '已暂停，剩余任务保留在本机' : this.summary(),
+        });
+        this.hooks.changed();
+      });
     return this.running;
   }
-  private async execute(owner: string, instance: string, force: boolean) {
+
+  private summary() {
+    const { total, done, failed } = this.batch;
+    if (!total) return '没有待上传的记录';
+    if (failed) return `已上传 ${done} 条，${failed} 条失败待重试`;
+    return `全部 ${done} 条已上传完成`;
+  }
+
+  private async execute(owner: string, instance: string, options: { ids?: string[]; force?: boolean }) {
     const connection = await this.api.connection();
     if (connection.instance !== instance)
       throw new Error('服务实例已变化，请核实项目后重新登录；原任务未转发');
-    const records = (await this.repo.read()).records
+
+    const state = await this.repo.read();
+    const queue = state.entries
       .filter(
         (row) =>
           belongs(row, owner, instance) &&
-          ['queued', 'failed'].includes(row.status) &&
-          (force || !row.nextRetryAt || row.nextRetryAt <= Date.now()),
+          isPending(row) &&
+          (!options.ids || options.ids.includes(row.id)) &&
+          (options.force || !row.nextRetryAt || row.nextRetryAt <= Date.now()),
       )
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    for (const item of records) {
-      if (this.stopped || !this.api.active()) break;
-      try {
-        let row = await this.repo.update(item.id, owner, instance, (record) => {
-          if (record.scope && record.scope !== connection.scope)
-            throw Object.assign(new Error('项目通道已更换，请先核对原上传任务，不能自动转发'), {
-              status: 409,
-            });
-          record.scope = connection.scope;
-          record.status = 'uploading';
-          record.error = '';
-        });
-        this.changed();
-        for (let i = 0; i < row.photos.length; i++) {
-          if (this.stopped || !this.api.active()) throw new Error('上传已暂停，本机任务保留');
-          const photo = row.photos[i];
-          if (!photo.remoteId) {
-            const receipt = await this.api.photo(row, photo, (percent) =>
-              this.progress(
-                row.id,
-                Math.round(((i + percent / 100) / (row.photos.length + 1)) * 100),
-              ),
-            );
-            if (receipt.scope !== connection.scope)
-              throw new Error('照片返回的项目通道不一致，请管理员核实');
-            row = await this.repo.update(row.id, owner, instance, (record) => {
-              Object.assign(record.photos.find((p) => p.id === photo.id)!, {
-                remoteId: receipt.id,
-                remoteScope: receipt.scope,
-              });
-            });
-          } else if (photo.remoteScope !== connection.scope)
-            throw Object.assign(new Error('照片所属项目不一致，已停止自动提交'), { status: 409 });
-        }
-        if (this.stopped || !this.api.active()) throw new Error('上传已暂停，本机任务保留');
-        const receipt = await this.api.submit(row);
-        await this.repo.update(row.id, owner, instance, (record) => {
-          record.status = 'submitted';
-          record.serverId = receipt.serverId;
-          record.submittedAt = receipt.createdAt;
-          record.reviewStatus = receipt.reviewStatus;
-          record.error = '';
-          record.attempts = 0;
-          record.nextRetryAt = 0;
-        });
-        this.progress(row.id, 100);
-        this.changed();
-      } catch (error: any) {
-        await this.repo.update(item.id, owner, instance, (row) => {
-          if (row.status === 'submitted') return;
-          row.status = this.stopped ? 'queued' : 'failed';
-          row.error = error.message || '上传未完成，请稍后重试';
-          row.attempts = (row.attempts || 0) + 1;
-          const permanent = error.status >= 400 && error.status < 500 && error.status !== 429;
-          row.nextRetryAt = permanent
-            ? Date.now() + 365 * 86400000
-            : Date.now() + Math.min(300000, 10000 * 2 ** Math.min(row.attempts, 5));
-        });
-        this.changed();
-        if (this.stopped || !this.api.active() || !error.status) break;
-      }
+
+    if (!queue.length) {
+      this.publish({ running: false, total: 0, done: 0, failed: 0, percent: 100, message: '没有待上传的记录' });
+      return;
     }
+
+    this.publish({
+      running: true,
+      paused: false,
+      total: queue.length,
+      done: 0,
+      failed: 0,
+      percent: 0,
+      startedAt: Date.now(),
+      finishedAt: 0,
+      message: '正在上传',
+    });
+
+    for (let index = 0; index < queue.length; index++) {
+      if (this.stopRequested || !this.api.active()) break;
+      const item = queue[index];
+      this.publish({
+        currentId: item.id,
+        currentLabel: item.title || item.unitCode || item.id.slice(0, 8),
+        currentPercent: 0,
+      });
+      try {
+        await this.pushOne(item.id, owner, instance);
+        this.publish({
+          done: this.batch.done + 1,
+          percent: Math.round(((this.batch.done + 1 + this.batch.failed) / this.batch.total) * 100),
+        });
+      } catch (error: any) {
+        await this.markFailed(item.id, owner, instance, error);
+        const failed = this.batch.failed + 1;
+        this.publish({
+          failed,
+          percent: Math.round(((this.batch.done + failed) / this.batch.total) * 100),
+        });
+        // 网络/登录类错误：后面的任务大概率同样失败，直接停下等恢复
+        if (!error?.status || error.status === 401) break;
+      }
+      this.hooks.changed();
+    }
+  }
+
+  /**
+   * 失败落库：必须写回记录本身，否则界面会一直显示「上传中」，
+   * 用户既看不到原因，也无法判断哪一条需要重试。
+   * 主动暂停不算失败，保持 queued 等下次继续。
+   */
+  private async markFailed(id: string, owner: string, instance: string, error: any) {
+    const paused = this.stopRequested || !this.api.active();
+    try {
+      await this.repo.update(id, owner, instance, (record) => {
+        if (paused) {
+          record.status = 'queued';
+          record.error = '上传已暂停，剩余任务保留在本机';
+          return;
+        }
+        record.status = 'failed';
+        record.error = error?.message || '上传未完成，稍后重试';
+        record.attempts = (record.attempts || 0) + 1;
+        // 指数退避，最多 30 分钟；用户手动点「重新上传」时用 force 跳过
+        const minutes = Math.min(30, 2 ** Math.min(record.attempts, 5));
+        record.nextRetryAt = Date.now() + minutes * 60000;
+      });
+    } catch {
+      /* 记录已被删除或换了账号：不影响批次继续 */
+    }
+    this.hooks.changed();
+  }
+
+  private async pushOne(id: string, owner: string, instance: string) {
+    let row = await this.repo.update(id, owner, instance, (record) => {
+      record.status = 'uploading';
+      record.error = '';
+    });
+    this.hooks.changed();
+
+    const total = row.attachments.length + 1;
+    for (let i = 0; i < row.attachments.length; i++) {
+      if (this.stopRequested || !this.api.active()) throw new Error('上传已暂停，本机任务保留');
+      const attachment = row.attachments[i];
+      if (attachment.remoteId) continue;
+      const receipt = await this.api.upload(row, attachment, (percent) => {
+        const value = Math.round(((i + percent / 100) / total) * 100);
+        this.hooks.progress(row.id, value);
+        this.publish({ currentPercent: value });
+      });
+      row = await this.repo.update(row.id, owner, instance, (record) => {
+        const target = record.attachments.find((item) => item.id === attachment.id);
+        if (target) target.remoteId = receipt.id;
+      });
+    }
+
+    if (this.stopRequested || !this.api.active()) throw new Error('上传已暂停，本机任务保留');
+    const receipt = await this.api.submit(row);
+    await this.repo.update(row.id, owner, instance, (record) => {
+      record.status = 'submitted';
+      record.serverId = receipt.serverId;
+      record.code = receipt.code || record.code;
+      record.submittedAt = receipt.createdAt;
+      record.reviewStatus = receipt.reviewStatus;
+      record.reviewStatusCode = (receipt.reviewStatusCode as Entry['reviewStatusCode']) || 'pending';
+      record.error = '';
+      record.attempts = 0;
+      record.nextRetryAt = 0;
+    });
+    this.hooks.progress(row.id, 100);
+    this.publish({ currentPercent: 100 });
   }
 }

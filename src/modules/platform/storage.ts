@@ -1,4 +1,4 @@
-import { checksum, clone, freshState, validateState, type LocalState } from '../work/domain';
+import { checksum, clone, validateState, type LocalState } from '../work/domain';
 import type { StateDriver } from '../work/repository';
 declare const wx: any;
 declare const plus: any;
@@ -24,26 +24,39 @@ type Snapshot = { sequence: number; payload: string; checksum: string };
 /** 同包名升级时尝试读取旧 Capacitor 私有目录；只读迁移，绝不删除旧台账和照片。需在真机验收。 */
 async function readLegacyNative(): Promise<LocalState | undefined> {
   let directory: string;
-  if (plus.os.name === 'Android')
-    directory = String(plus.android.runtimeMainActivity().getFilesDir().getAbsolutePath());
-  else {
-    const manager = plus.ios.invoke('NSFileManager', 'defaultManager');
-    const urls = plus.ios.invoke(manager, 'URLsForDirectory:inDomains:', 9, 1);
-    const url = plus.ios.invoke(urls, 'objectAtIndex:', 0);
-    directory = String(plus.ios.invoke(url, 'path'));
+  try {
+    if (plus.os.name === 'Android') {
+      // 5+ Runtime 对链式 Java 调用返回值的包装在不同基座上不一致，
+      // 直接 .getFilesDir().getAbsolutePath() 在部分真机上报 is not a function，
+      // 必须用 plus.android.invoke 显式调用每一层。
+      const activity = plus.android.runtimeMainActivity();
+      const filesDir = plus.android.invoke(activity, 'getFilesDir');
+      directory = String(plus.android.invoke(filesDir, 'getAbsolutePath'));
+    } else {
+      const manager = plus.ios.invoke('NSFileManager', 'defaultManager');
+      const urls = plus.ios.invoke(manager, 'URLsForDirectory:inDomains:', 9, 1);
+      const url = plus.ios.invoke(urls, 'objectAtIndex:', 0);
+      directory = String(plus.ios.invoke(url, 'path'));
+    }
+  } catch {
+    // 无法定位旧目录时按「无旧资料」继续，不让迁移逻辑卡死新安装的初始化。
+    return undefined;
   }
   const read = (name: string) =>
-    new Promise<string | undefined>((resolve, reject) =>
+    new Promise<string | undefined>((resolve) =>
       plus.io.resolveLocalFileSystemURL(
         'file://' + directory + '/field-management/' + name,
         (entry: any) =>
           entry.file((file: any) => {
             const reader = new plus.io.FileReader();
             reader.onloadend = (event: any) => resolve(String(event.target.result));
-            reader.onerror = reject;
+            reader.onerror = () => resolve(undefined);
             reader.readAsText(file, 'utf-8');
-          }, reject),
-        (error: any) => (error.code === 1 ? resolve(undefined) : reject(error)),
+          }, () => resolve(undefined)),
+        // 旧资料目录不存在/无法访问一律按「无旧资料」处理：
+        // 部分基座对不存在的路径返回的 code 不是 1（如中文「路径不存在」），
+        // 不能因此卡死全新安装的本机存储初始化。
+        () => resolve(undefined),
       ),
     );
   const snapshots = await Promise.all(['state-a.json', 'state-b.json'].map(read));
@@ -68,8 +81,8 @@ async function readLegacyNative(): Promise<LocalState | undefined> {
     valid[0]?.state ||
     (await read('state.json').then((text) => (text ? validateState(JSON.parse(text)) : undefined)));
   if (earlier) {
-    for (const row of earlier.records)
-      for (const photo of row.photos)
+    for (const row of earlier.entries)
+      for (const photo of row.attachments)
         if (photo.key.startsWith('field-management/photos/'))
           photo.key = 'file://' + directory + '/' + photo.key;
     earlier.storageNotice = '已读取旧版 APP 本机资料，请核对后继续上传；原文件保持不变';
@@ -202,18 +215,16 @@ export function createWechatDriver(): StateDriver {
               const item = JSON.parse(text);
               const old = JSON.parse(item.payload);
               if (item.checksum !== checksum(item.payload)) return text;
-              const state = {
-                ...freshState(),
-                records: old.records.map((row: any) => ({
-                  ...row,
-                  photos: row.photos.map((photo: any) => ({
-                    ...photo,
-                    key: photo.path || photo.key,
-                  })),
-                })),
-              };
-              state.settings.endpoint = old.endpoint || '';
-              const payload = JSON.stringify(state);
+              // 保持 V1 扁平结构的原样交给 migrateState：它只保留地址与登录态，
+              // 记录条数写入提示。若在这里套上 V2 外壳，旧记录会被静默丢弃且不再提示。
+              const payload = JSON.stringify({
+                version: 1,
+                records: Array.isArray(old.records) ? old.records : [],
+                settings: {
+                  ...(old.settings || {}),
+                  endpoint: old.endpoint || old.settings?.endpoint || '',
+                },
+              });
               return JSON.stringify({
                 sequence: item.sequence,
                 payload,
@@ -224,10 +235,8 @@ export function createWechatDriver(): StateDriver {
             }
           }),
       );
-      if (previous) {
-        previous.state.storageNotice = '已保留旧版草稿，登录相同账号后核对并继续上传';
-        return previous.state;
-      }
+      // 提示语由 migrateState 按实际条数生成，不在驱动层覆盖，避免说成「已保留」而实际未迁移
+      if (previous) return previous.state;
       return undefined;
     },
     async write(value) {

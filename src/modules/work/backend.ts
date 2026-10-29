@@ -39,14 +39,17 @@ export interface Captcha {
   img: string;
 }
 
-/** 后端尚未提供施工记录相关接口，业务数据继续只保存在本机。 */
-export const supportsBusiness = false;
+/** 后端已提供施工记录/照片/台账接口，业务数据同步开关 */
+export const supportsBusiness = true;
 
 let root = '';
 let bearer = '';
 
 export const hasSession = () => Boolean(bearer);
+export const currentToken = () => bearer;
 export const currentRoot = () => root;
+/** 请求基地址：留空地址时走同源 /api（由 vite 代理转发），与 request() 内的拼接保持一致 */
+export const currentBase = () => root || '/api';
 export const clearSession = () => {
   bearer = '';
 };
@@ -85,7 +88,11 @@ export function configureBackend(value: string) {
 
 const url = (path: string) => `${root || '/api'}${path}`;
 
-function request<T>(path: string, options: { method?: 'GET' | 'POST' | 'PUT'; data?: object } = {}) {
+/** 业务请求统一入口：自动带 Bearer、解析 {code,message,data} 包裹、401 清会话 */
+export function request<T>(
+  path: string,
+  options: { method?: 'GET' | 'POST' | 'PUT' | 'DELETE'; data?: object } = {},
+) {
   const method = options.method || (options.data === undefined ? 'GET' : 'POST');
   const token = bearer;
   return new Promise<T>((resolve, reject) => {
@@ -126,6 +133,7 @@ function request<T>(path: string, options: { method?: 'GET' | 'POST' | 'PUT'; da
         reject(new ApiError(fallback, status));
       },
       fail: () => reject(new ApiError('服务暂时无法连接，请检查服务器地址、端口与网络')),
+      complete: () => {},
     });
   });
 }
@@ -151,6 +159,20 @@ export async function login(username: string, password: string, captchaId: strin
 export const profile = () => request<AccountProfile>('/account/profile');
 export const permissions = () => request<string[]>('/account/permissions');
 export const logout = () => request<void>('/account/logout');
+
+/** 服务端项目通道：登录后以此为准，覆盖由地址派生的兜底 scope。 */
+export interface ServerChannel {
+  id: number;
+  code: string;
+  scope: string;
+  name: string;
+  instance: string;
+  mode: string;
+  integration: string;
+}
+
+/** 服务端只启用一个项目时返回通道；多项目报 1505、未配置报 1504。 */
+export const channel = () => request<ServerChannel>('/mobile/channel');
 
 export async function directory(): Promise<{ users: DirectoryUser[]; generatedAt: string }> {
   const result = await request<{ items?: AccountProfile[] }>('/system/users?page=1&pageSize=100');

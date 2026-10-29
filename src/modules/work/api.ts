@@ -1,276 +1,319 @@
+/**
+ * 业务接口适配层：只负责调用 nest-admin 的 /mobile 接口并校验回执，
+ * 会话、地址与错误封装统一由 backend.ts 处理。
+ */
 import {
-  normalizeEndpoint,
-  scopePattern,
   uuidPattern,
+  type Attachment,
   type Connection,
-  type RegistrationDetails,
-  type DirectoryUser,
-  type Photo,
-  type User,
-  type WorkRecord,
+  type Dict,
+  type Entry,
+  type Project,
+  type Unit,
+  type UnitStep,
 } from './domain';
 import { localPhotoUrl } from '../platform/media';
-import type { LedgerSnapshot } from './ledger';
-let endpoint = '',
-  bearer = '';
-const tasks = new Set<{ abort(): void }>();
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public status = 0,
-  ) {
-    super(message);
-  }
+import * as backend from './backend';
+
+export const ApiError = backend.ApiError;
+export const hasSession = backend.hasSession;
+export const clearSession = backend.clearSession;
+export const configureApi = backend.configureBackend;
+/** uni.uploadFile 不提供统一的中止句柄，保留空实现兼容调用方 */
+export const abortUploads = () => {};
+
+export async function getConnection(): Promise<Connection> {
+  return backend.connectionOf();
 }
-export const hasSession = () => Boolean(bearer);
-export const clearSession = () => {
-  bearer = '';
-  abortUploads();
-};
-export const abortUploads = () => {
-  for (const task of tasks) task.abort();
-  tasks.clear();
-};
-export function configureApi(value: string) {
-  let browser = false;
-  // #ifdef H5
-  browser = true;
-  // #endif
-  const next = normalizeEndpoint(value, browser);
-  if (endpoint !== next) clearSession();
-  endpoint = next;
+
+interface ServerAttachment {
+  id: string;
+  kind: Attachment['kind'];
+  name: string;
+  mime: string;
+  size: number;
+  url?: string;
+  takenAt?: string;
 }
-export function request<T>(path: string, data?: object): Promise<T> {
-  if (!endpoint) return Promise.reject(new ApiError('请先配置项目服务地址'));
-  const token = bearer;
-  return new Promise((resolve, reject) => {
-    const task = uni.request({
-      url: endpoint + path,
-      method: data === undefined ? 'GET' : 'POST',
-      data,
-      timeout: 20000,
-      header: {
-        ...(token ? { Authorization: 'Bearer ' + token } : {}),
-        'Content-Type': 'application/json',
-      },
-      success: (response) => {
-        const value = response.data as any;
-        if (response.statusCode === 401 && bearer === token) bearer = '';
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          const status = response.statusCode;
-          // 预览代理在后台停止时可能返回空的500，不能只显示无从排查的“请求未完成”。
-          // 保留后端的业务错误；没有业务回执时，给出对应的服务检查方向，不显示HTML或请求凭据。
-          const fallback = [500, 502, 503, 504].includes(status)
-            ? `手机后台服务暂时不可用（HTTP ${status}），请启动手机服务后重试`
-            : status === 404 || status === 405
-              ? `未找到手机服务接口（HTTP ${status}），请检查项目服务地址`
-              : `手机服务返回异常（HTTP ${status}），请检查项目服务连接`;
-          return reject(new ApiError(value?.error || fallback, status));
-        }
-        if (!value || typeof value !== 'object') return reject(new ApiError('服务器回执格式异常'));
-        resolve(value as T);
-      },
-      fail: () => reject(new ApiError('服务暂时无法连接，本机记录仍保留')),
-      complete: () => {
-        tasks.delete(task);
-      },
-    });
-    tasks.add(task);
+
+interface ServerEntry {
+  id: string;
+  serverId?: string;
+  code: string;
+  unitId: string;
+  unitCode?: string;
+  unitName?: string;
+  stepCode?: string | null;
+  typeCode: string;
+  title: string;
+  content: string;
+  workDate: string;
+  occurredAt?: string;
+  location?: string;
+  longitude?: number | null;
+  latitude?: number | null;
+  weather?: string;
+  temperature?: number | null;
+  reviewStatus?: string;
+  reviewStatusCode?: string;
+  reviewRemark?: string;
+  submittedAt?: string;
+  updatedAt?: string;
+  attachments?: ServerAttachment[];
+}
+
+/** 服务端记录 -> 本机记录（已提交） */
+function toEntry(remote: ServerEntry): Entry {
+  return {
+    id: remote.id,
+    serverId: remote.serverId || remote.id,
+    code: remote.code,
+    unitId: remote.unitId,
+    unitCode: remote.unitCode || '',
+    unitName: remote.unitName || '',
+    stepCode: remote.stepCode || null,
+    typeCode: remote.typeCode,
+    title: remote.title,
+    content: remote.content || '',
+    workDate: remote.workDate,
+    occurredAt: remote.occurredAt,
+    location: remote.location || '',
+    longitude: remote.longitude ?? null,
+    latitude: remote.latitude ?? null,
+    weather: remote.weather || '',
+    temperature: remote.temperature ?? null,
+    status: 'submitted',
+    reviewStatus: remote.reviewStatus,
+    reviewStatusCode: (remote.reviewStatusCode as Entry['reviewStatusCode']) || 'pending',
+    reviewRemark: remote.reviewRemark || '',
+    submittedAt: remote.submittedAt,
+    updatedAt: remote.updatedAt || remote.submittedAt || new Date().toISOString(),
+    createdAt: remote.submittedAt || remote.updatedAt || new Date().toISOString(),
+    attachments: (remote.attachments || []).map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      name: item.name,
+      mime: item.mime,
+      size: item.size,
+      key: '',
+      remoteId: item.id,
+    })),
+    revision: 1,
+    owner: '',
+    instance: '',
+  };
+}
+
+export const toEntries = (list: ServerEntry[]) => list.map(toEntry);
+
+/** 字典：事项类型 + 施工内容类型 + 工序模板 */
+export async function getDict(): Promise<Dict> {
+  const result = await backend.request<Omit<Dict, 'at'>>('/mobile/dict');
+  if (!Array.isArray(result?.unitTypes) || !Array.isArray(result?.entryTypes))
+    throw new ApiError('字典回执异常，请稍后重试');
+  return {
+    unitTypes: result.unitTypes,
+    entryTypes: result.entryTypes,
+    steps: Array.isArray(result.steps) ? result.steps : [],
+    at: new Date().toISOString(),
+  };
+}
+
+/** 我参与的项目 */
+export async function getProjects(): Promise<Project[]> {
+  const list = await backend.request<Project[]>('/mobile/projects');
+  if (!Array.isArray(list)) throw new ApiError('项目回执异常，请稍后重试');
+  return list;
+}
+
+export async function getUnits(projectId: number): Promise<{ items: Unit[]; total: number }> {
+  const result = await backend.request<{ items?: Unit[]; total?: number }>(
+    `/mobile/units?projectId=${projectId}&page=1&pageSize=100`,
+  );
+  if (!Array.isArray(result?.items)) throw new ApiError('事项列表回执异常，请稍后重试');
+  return { items: result.items, total: result.total || result.items.length };
+}
+
+export async function getUnitDetail(id: string) {
+  const result = await backend.request<{
+    unit: Unit;
+    steps: UnitStep[];
+    entries: ServerEntry[];
+  }>(`/mobile/units/${id}`);
+  if (!result?.unit?.id) throw new ApiError('事项详情回执异常，请稍后重试');
+  return {
+    unit: { ...result.unit, steps: result.steps || [] },
+    steps: result.steps || [],
+    entries: toEntries(result.entries || []),
+  };
+}
+
+export async function createUnit(payload: {
+  id: string;
+  projectId: number;
+  typeCode: string;
+  code: string;
+  name?: string;
+  location?: string;
+}) {
+  const result = await backend.request<Unit>('/mobile/units', { method: 'POST', data: payload });
+  if (!result?.id) throw new ApiError('新建事项回执异常，请稍后重试');
+  return result;
+}
+
+export async function setStep(unitId: string, stepCode: string, status: string, remark = '') {
+  const result = await backend.request<UnitStep[]>(
+    `/mobile/units/${unitId}/steps/${stepCode}`,
+    { method: 'PUT', data: { status, remark } },
+  );
+  if (!Array.isArray(result)) throw new ApiError('工序回执异常，请稍后重试');
+  return result;
+}
+
+/** 提交记录：客户端 UUID 幂等，重复提交返回同一回执 */
+export async function submitEntry(entry: Entry) {
+  const result = await backend.request<{
+    id: string;
+    serverId: string;
+    code: string;
+    createdAt: string;
+    reviewStatus: string;
+    reviewStatusCode: string;
+  }>('/mobile/entries', {
+    method: 'POST',
+    data: {
+      id: entry.id,
+      unitId: entry.unitId,
+      typeCode: entry.typeCode,
+      stepCode: entry.stepCode || undefined,
+      title: entry.title.trim(),
+      content: entry.content.trim(),
+      workDate: entry.workDate,
+      occurredAt: entry.occurredAt,
+      location: entry.location,
+      longitude: entry.longitude ?? undefined,
+      latitude: entry.latitude ?? undefined,
+      weather: entry.weather,
+      temperature: entry.temperature ?? undefined,
+      attachmentIds: entry.attachments
+        .map((item) => item.remoteId)
+        .filter((id): id is string => Boolean(id)),
+      clientCreatedAt: entry.createdAt,
+    },
   });
-}
-export async function getConnection() {
-  const result = await request<Connection>('/config');
-  if (
-    result.service !== 'wind-field-mobile' ||
-    !scopePattern.test(result.scope) ||
-    !scopePattern.test(result.instance) ||
-    !['trial', 'linked'].includes(result.mode)
-  )
-    throw new ApiError('该地址不是本项目的移动端服务');
+  if (result?.id !== entry.id || !uuidPattern.test(result.serverId || ''))
+    throw new ApiError('提交回执不完整，请继续核实；不会重复发布');
   return result;
 }
-export async function login(
-  username: string,
-  password: string,
-  register = false,
-  role?: User['role'],
-  details?: RegistrationDetails,
-) {
-  const result = await request<{
-    user: User;
-    token: string;
-    offlineUntil?: number;
-  }>(register ? '/auth/register' : '/auth/login', {
-    username: username.trim(),
-    password,
-    ...(role === undefined ? {} : { role }),
-    ...(register && details ? details : {}),
-  });
-  if (
-    !uuidPattern.test(result.user?.id) ||
-    !/^[a-f\d]{64}$/.test(result.token) ||
-    !['admin', 'worker'].includes(result.user.role)
-  )
-    throw new ApiError('登录回执异常');
-  bearer = result.token;
+
+/** 本人已提交记录（增量同步用） */
+export async function getMine(updatedAfter?: string) {
+  const query = updatedAfter ? `?limit=500&updatedAfter=${encodeURIComponent(updatedAfter)}` : '?limit=500';
+  const result = await backend.request<{ entries?: ServerEntry[]; serverTime?: string }>(
+    `/mobile/entries/mine${query}`,
+  );
+  if (!Array.isArray(result?.entries)) throw new ApiError('记录同步回执异常，本机数据未覆盖');
+  return { entries: toEntries(result.entries), serverTime: result.serverTime || '' };
+}
+
+export async function getPending() {
+  const result = await backend.request<{ items?: ServerEntry[]; total?: number }>(
+    '/mobile/entries/pending?pageSize=100',
+  );
+  return { items: toEntries(result?.items || []), total: result?.total || 0 };
+}
+
+export async function reviewEntry(id: string, action: 'approve' | 'reject', remark = '') {
+  const result = await backend.request<{ reviewStatus: string; reviewStatusCode: string }>(
+    `/mobile/entries/${id}/review`,
+    { method: 'PUT', data: { action, remark } },
+  );
   return result;
 }
-export async function getDirectory() {
-  const result = await request<{ users: DirectoryUser[]; generatedAt: string }>('/admin/users');
-  if (
-    !Array.isArray(result.users) ||
-    result.users.some(
-      (user) => !uuidPattern.test(user.id) || !['admin', 'worker'].includes(user.role),
-    )
-  )
-    throw new ApiError('用户资料回执异常');
-  return result;
-}
-export async function logout() {
-  try {
-    await request('/auth/logout', {});
-  } finally {
-    clearSession();
-  }
-}
-export async function uploadPhoto(
-  row: WorkRecord,
-  photo: Photo,
+
+/** 附件上传：X-File-Meta 携带元数据，onProgressUpdate 提供逐张进度 */
+export async function uploadAttachment(
+  entry: Entry,
+  attachment: Attachment,
   progress: (value: number) => void,
 ) {
-  const token = bearer,
-    target = endpoint;
-  const filePath = await localPhotoUrl(photo);
+  const token = backend.currentToken();
+  const filePath = await localPhotoUrl(attachment);
   // 读大图期间可能退出/切换账号，禁止迟到的任务借用新账号令牌提交原账号资料。
-  if (!token || token !== bearer || target !== endpoint)
-    throw new ApiError('登录状态已变化，请重新登录后继续原任务', 401);
+  if (!token || token !== backend.currentToken())
+    throw new backend.ApiError('登录状态已变化，请重新登录后继续原任务', 401);
+
   const metadata = encodeURIComponent(
     JSON.stringify({
-      id: photo.id,
-      recordId: row.id,
-      module: row.type,
-      date: row.date,
-      location: row.location.trim(),
-      name: photo.name,
-      description: row.content.slice(0, 500),
+      id: attachment.id,
+      unitId: entry.unitId,
+      kind: attachment.kind,
+      name: attachment.name,
+      takenAt: entry.occurredAt,
+      longitude: entry.longitude ?? undefined,
+      latitude: entry.latitude ?? undefined,
     }),
   );
-  return new Promise<{ id: string; scope: string }>((resolve, reject) => {
+
+  return new Promise<{ id: string; reused: boolean }>((resolve, reject) => {
     const task = uni.uploadFile({
-      url: target + '/photos',
+      url: `${backend.currentBase()}/mobile/attachments`,
       filePath,
       name: 'file',
-      timeout: 120000,
+      timeout: 180000,
       header: { Authorization: 'Bearer ' + token, 'X-File-Meta': metadata },
       success: (response) => {
         try {
-          const value = JSON.parse(response.data);
-          if (response.statusCode === 401 && bearer === token) bearer = '';
+          const value = JSON.parse(response.data) as {
+            code?: number;
+            message?: string;
+            data?: { id?: string; reused?: boolean };
+          };
           if (response.statusCode < 200 || response.statusCode >= 300)
-            throw new ApiError(value.error || '照片上传未完成', response.statusCode);
-          if (!uuidPattern.test(value.id) || !scopePattern.test(value.scope))
-            throw new ApiError('照片回执无效，请重试核实');
-          resolve(value);
+            throw new backend.ApiError(
+              value?.message || '附件上传未完成',
+              response.statusCode,
+              Number(value?.code) || 0,
+            );
+          if (!value?.data?.id) throw new backend.ApiError(value?.message || '附件回执无效');
+          resolve({ id: value.data.id, reused: Boolean(value.data.reused) });
         } catch (error) {
           reject(error);
         }
       },
-      fail: () => reject(new ApiError('照片上传中断，已完成的照片保留，稍后继续')),
-      complete: () => {
-        tasks.delete(task);
-      },
+      fail: () => reject(new backend.ApiError('上传中断，已完成的附件保留，稍后继续')),
     });
-    tasks.add(task);
-    task.onProgressUpdate((event) => progress(Math.min(95, event.progress)));
+    // 部分平台不返回 task，进度回调可缺省
+    task?.onProgressUpdate?.((event: { progress: number }) => {
+      progress(Math.min(99, Math.max(1, Math.round(event.progress || 0))));
+    });
   });
 }
-export async function submitRecord(row: WorkRecord) {
-  const result = await request<{
-    id: string;
-    serverId: string;
-    createdAt: string;
-    reviewStatus: string;
-  }>('/reports', {
-    id: row.id,
-    type: row.type,
-    date: row.date,
-    location: row.location.trim(),
-    content: row.content.trim(),
-    photoIds: row.photos.map((photo) => photo.remoteId),
-  });
-  if (
-    result.id !== row.id ||
-    !uuidPattern.test(result.serverId) ||
-    !Number.isFinite(Date.parse(result.createdAt)) ||
-    !['已审核', '待审核', '退回修改'].includes(result.reviewStatus)
-  )
-    throw new ApiError('提交回执不完整，请继续核实；不会重复发布');
-  return result;
-}
-export async function getReports() {
-  const result = await request<{ reports: WorkRecord[]; deletedIds: string[] }>('/reports');
-  if (
-    !Array.isArray(result.reports) ||
-    !Array.isArray(result.deletedIds) ||
-    result.reports.some(
-      (row) =>
-        !uuidPattern.test(row.id) ||
-        !uuidPattern.test(row.serverId || '') ||
-        !scopePattern.test(row.scope || '') ||
-        !Array.isArray(row.photos) ||
-        row.photos.some(
-          (photo) =>
-            !uuidPattern.test(photo.remoteId || '') || !scopePattern.test(photo.remoteScope || ''),
-        ),
-    ) ||
-    result.deletedIds.some((id) => !uuidPattern.test(id))
-  )
-    throw new ApiError('服务器台账格式异常，本机数据未覆盖');
-  return result;
-}
-export async function getLedger() {
-  const value = await request<LedgerSnapshot>('/admin/ledger');
-  if (
-    !scopePattern.test(value.scope) ||
-    !Number.isFinite(Date.parse(value.generatedAt)) ||
-    !['live', 'receipts'].includes(value.ledgerStatus) ||
-    !Array.isArray(value.reports) ||
-    value.reports.some(
-      (row) =>
-        !uuidPattern.test(row.id) ||
-        !uuidPattern.test(row.owner) ||
-        row.reporter?.id !== row.owner ||
-        row.scope !== value.scope ||
-        !uuidPattern.test(row.serverId || '') ||
-        row.status !== 'submitted' ||
-        !Array.isArray(row.photos) ||
-        row.photos.some(
-          (photo) => !uuidPattern.test(photo.remoteId || '') || photo.remoteScope !== value.scope,
-        ),
-    )
-  )
+
+export async function getLedger(query = '') {
+  const result = await backend.request<any>(`/mobile/admin/ledger${query}`);
+  if (!result?.summary || !Array.isArray(result.units) || !Array.isArray(result.entries))
     throw new ApiError('项目台账回执异常，请刷新重试');
-  // 项目记录只读，不混入个人本机队列，也不把后台缓存路径当成手机持久文件。
-  return {
-    ...value,
-    reports: value.reports.map((row) => ({
-      ...row,
-      photos: row.photos.map((photo) => ({ ...photo, key: '' })),
-    })),
-  };
+  return result;
 }
-export async function remotePhotoUrl(photo: Photo, management = false) {
-  if (!uuidPattern.test(photo.remoteId || '') || !hasSession())
-    throw new Error('请联网登录后查看服务器照片');
+
+export async function getDashboard() {
+  return backend.request<any>('/mobile/dashboard');
+}
+
+export async function remoteAttachmentUrl(attachment: Attachment) {
+  const id = attachment.remoteId;
+  if (!id || !uuidPattern.test(id) || !backend.hasSession())
+    throw new Error('请联网登录后查看服务器附件');
   return new Promise<string>((resolve, reject) =>
     uni.downloadFile({
-      url: endpoint + (management ? '/admin/photos/' : '/photos/') + photo.remoteId,
-      header: { Authorization: 'Bearer ' + bearer },
+      url: `${backend.currentBase()}/mobile/attachments/${id}`,
+      header: { Authorization: 'Bearer ' + backend.currentToken() },
       timeout: 30000,
       success: (value) =>
         value.statusCode === 200
           ? resolve(value.tempFilePath)
-          : reject(new Error('照片无法读取，请核对登录及审核状态')),
+          : reject(new Error('附件无法读取，请核对登录状态')),
       fail: reject,
     }),
   );

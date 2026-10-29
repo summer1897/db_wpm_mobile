@@ -3,13 +3,16 @@ import { ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import PageHead from '../../components/PageHead.vue';
 import { checkConnection, handleError, initialize, setEndpoint, state, toast } from '../../modules/work/store';
+import { DEPLOYMENT, resolveEndpoint } from '../../config/deployment';
 const endpoint = ref(''),
   busy = ref(false),
   message = ref(''),
-  status = ref('');
+  status = ref(''),
+  // 地址由实施人员统一配置；关闭 allowCustomEndpoint 后现场只读
+  editable = DEPLOYMENT.allowCustomEndpoint;
 onLoad(async () => {
   await initialize();
-  endpoint.value = state.local?.settings.endpoint || '';
+  endpoint.value = resolveEndpoint(state.local?.settings.endpoint);
   status.value = state.connection ? `${state.connection.instance}` : '';
 });
 async function saveEndpoint() {
@@ -66,15 +69,19 @@ async function testConnection() {
     <view class="card"
       ><text class="section-title">服务器地址</text
       ><text class="settings-copy"
-        >填写 nest-admin 后端地址，可带端口，不需要写 /api。局域网可用 http，公网地址必须使用
-        HTTPS；H5 预览留空即走同源代理。</text
+        >施工服务地址已由实施人员统一配置，现场人员直接使用即可，无需修改。</text
       ><input
+        v-if="editable"
         v-model="endpoint"
         class="field-input endpoint-input"
         placeholder="http://192.168.1.10:7001"
         :maxlength="250"
-      /><text class="field-hint">手机真机调试请填写电脑的局域网 IP，不要用 127.0.0.1</text
+      /><text v-else class="field-input endpoint-input readonly">{{ endpoint }}</text
+      ><text v-if="editable" class="field-hint"
+        >仅运维人员按需修改：填 nest-admin 地址含端口，不要写 /api；局域网可用 http，公网必须
+        HTTPS。手机真机调试请填电脑局域网 IP，不要用 127.0.0.1</text
       ><button
+        v-if="editable"
         class="primary setting-button"
         :loading="busy"
         :disabled="busy"
@@ -108,7 +115,8 @@ async function testConnection() {
       </view>
       <text v-else class="settings-copy">尚未登录，请返回登录页使用 nest-admin 账号登录。</text>
       <text class="settings-copy"
-        >账号、密码与角色由 nest-admin 校验；施工记录目前保存在本机，后端开放记录接口后即可上传。</text
+        >账号、密码与角色由 nest-admin 校验；施工记录与照片提交后存入后端（对象存储
+        MinIO），离线时先保存在本机、联网后自动续传。</text
       >
     </view>
     <view class="bottom-note">服务变更不会清空本机记录或原始照片</view>
@@ -128,6 +136,14 @@ async function testConnection() {
 }
 .endpoint-input {
   font-size: 14px;
+}
+.readonly {
+  display: block;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f2f6ec;
+  color: #35543f;
+  word-break: break-all;
 }
 .account-box {
   margin: 12px 0 4px;

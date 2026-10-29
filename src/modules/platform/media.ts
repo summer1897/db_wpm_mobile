@@ -1,4 +1,4 @@
-import { MAX_BYTES, uuid, type Photo } from '../work/domain';
+import { MAX_PHOTO_BYTES, uuid, type Attachment } from '../work/domain';
 // #ifdef H5
 import { openBrowserDatabase } from './storage';
 // #endif
@@ -22,8 +22,8 @@ export async function choosePhotos(count: number): Promise<{ path: string; size:
   ).map((file) => ({ path: file.path, size: file.size }));
 }
 /** 必须先将临时照片落到持久空间，再把其引用写入台账；失败时不显示“已保存”。 */
-export async function persistPhoto(file: { path: string; size: number }): Promise<Photo> {
-  if (!file.size || file.size > MAX_BYTES) throw new Error('单张照片不能超过20 MB');
+export async function persistPhoto(file: { path: string; size: number }): Promise<Attachment> {
+  if (!file.size || file.size > MAX_PHOTO_BYTES) throw new Error('单张照片不能超过20 MB');
   const info = await new Promise<{ type?: string }>((resolve, reject) =>
     uni.getImageInfo({ src: file.path, success: resolve, fail: reject }),
   );
@@ -37,15 +37,16 @@ export async function persistPhoto(file: { path: string; size: number }): Promis
     String(detectedType).toLowerCase()
   ];
   if (!ext) throw new Error('请选择 JPG、PNG 或 WEBP 照片，其他格式请先转换');
-  const photo: Photo = {
+  const photo: Attachment = {
     id: uuid(),
     key: '',
+    kind: 'photo',
     name: '施工照片.' + ext,
     size: file.size,
     mime: ext === 'jpg' ? 'image/jpeg' : 'image/' + ext,
   };
   // #ifdef H5
-  if (!blob.size || blob.size > MAX_BYTES) throw new Error('照片文件无法读取或超过20 MB');
+  if (!blob.size || blob.size > MAX_PHOTO_BYTES) throw new Error('照片文件无法读取或超过20 MB');
   photo.key = `field-management/photos/${photo.id}`;
   const db = await openBrowserDatabase();
   await new Promise<void>((resolve, reject) => {
@@ -84,7 +85,7 @@ export async function persistPhoto(file: { path: string; size: number }): Promis
   // #endif
   return photo;
 }
-export async function localPhotoUrl(photo: Photo) {
+export async function localPhotoUrl(photo: Attachment) {
   if (!photo.key) throw new Error('照片尚未下载，请联网查看');
   // #ifdef H5
   if (previews.has(photo.key)) return previews.get(photo.key)!;
@@ -105,7 +106,7 @@ export async function localPhotoUrl(photo: Photo) {
   return photo.key;
   // #endif
 }
-export async function removePhotoFile(photo: Photo) {
+export async function removePhotoFile(photo: Attachment) {
   if (!photo.key) return;
   // #ifdef H5
   if (!photo.key.startsWith('field-management/photos/')) return;

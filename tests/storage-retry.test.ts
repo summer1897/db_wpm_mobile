@@ -1,6 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { freshState, draft, uuid } from '../src/modules/work/domain';
+import { freshState, draftEntry, uuid, type Unit } from '../src/modules/work/domain';
+
+function unit(): Unit {
+  return {
+    id: uuid(),
+    projectId: 1,
+    typeCode: 'turbine',
+    typeName: '风机',
+    code: 'T20',
+    name: '',
+    location: '',
+    status: 'planning',
+    statusName: '待施工',
+    progress: 0,
+    doneSteps: 0,
+    totalSteps: 10,
+    entryCount: 0,
+    attachmentCount: 0,
+  };
+}
 test('初始化错误保留具体原因；重试不清空原记录，成功后不重复初始化', async () => {
   const { initialize, retryLocalStorage, repository, state } = await import(
     '../src/modules/work/store'
@@ -10,9 +29,9 @@ test('初始化错误保留具体原因；重试不清空原记录，成功后�
   const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   const oldUni = Object.getOwnPropertyDescriptor(globalThis, 'uni');
   const snapshot = freshState();
-  const record = draft(uuid(), 'a'.repeat(64), 'foundation');
+  const record = draftEntry(uuid(), 'a'.repeat(64), unit());
   record.location = '未上传资料必须保留';
-  snapshot.records.push(record);
+  snapshot.entries.push(record);
   let calls = 0;
   repository.initialize = async () => {
     calls++;
@@ -43,8 +62,8 @@ test('初始化错误保留具体原因；重试不清空原记录，成功后�
     assert.equal(calls, 1, '错误状态不自动反复写盘');
     await retryLocalStorage();
     assert.equal(calls, 2);
-    assert.equal(state.local!.records[0].id, record.id);
-    assert.equal(state.local!.records[0].location, record.location);
+    assert.equal(state.local!.entries[0].id, record.id);
+    assert.equal(state.local!.entries[0].location, record.location);
     assert.equal(state.storageError, '');
     await retryLocalStorage();
     assert.equal(calls, 2);

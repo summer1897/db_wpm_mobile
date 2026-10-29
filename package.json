@@ -15,11 +15,11 @@
     "build:mp-weixin": "node scripts/platform.mjs build mp-weixin",
     "build:app": "node scripts/platform.mjs build app",
     "typecheck": "vue-tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts && node --test tests/*.test.mjs",
-    "test:ui": "node tests/browser.mjs",
-    "test:launch": "node --test tests/launcher.mjs",
+    "test": "tsx --test tests/*.test.ts && node --test tests/wechat-output.test.mjs",
+    "test:legacy": "node --test tests/legacy/*.test.mjs",
+    "test:ui": "node tests/legacy/browser.mjs",
+    "test:launch": "node --test tests/legacy/launcher.mjs",
     "format": "prettier --write src scripts tests server *.json *.ts *.md index.html .vscode/*.json",
-    "server": "node scripts/services.mjs",
     "assets": "node scripts/assets.mjs"
   },
   "dependencies": {

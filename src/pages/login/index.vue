@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import { onLoad } from '@dcloudio/uni-app';
 import FieldIcon from '../../components/FieldIcon.vue';
 import * as backend from '../../modules/work/backend';
+import { resolveEndpoint } from '../../config/deployment';
 import {
   checkConnection,
   continueOffline,
@@ -26,7 +27,8 @@ const needsService = computed(() => {
   // #ifndef H5
   native = true;
   // #endif
-  return native && Boolean(state.local) && !state.local?.settings.endpoint.trim();
+  // 服务地址由部署配置提供，现场用户不必配置；只有运维把默认地址留空时才提示
+  return native && !resolveEndpoint(state.local?.settings.endpoint);
 });
 const offline = computed(() => {
   const identity = state.local?.settings.identity;
@@ -222,7 +224,7 @@ async function retryStorage() {
         <view v-if="offline" class="offline-copy">仅保存到本机，联网登录后上传</view>
       </view>
       <button class="server-entry" @click="configure">
-        {{ state.local?.settings.endpoint ? '项目服务已配置 · 修改' : '配置项目服务' }}
+        服务设置
       </button>
     </view>
     <view class="login-footer">现场记录 · 可靠留存 · 同步归档</view>

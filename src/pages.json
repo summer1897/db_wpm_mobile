@@ -12,16 +12,28 @@
       }
     },
     {
-      "path": "pages/records/index",
+      "path": "pages/units/index",
       "style": {
         "navigationStyle": "custom",
-        "navigationBarTitleText": "施工记录",
+        "navigationBarTitleText": "事项 / 风机",
         "enablePullDownRefresh": true
       }
     },
     {
-      "path": "pages/profile/index",
-      "style": { "navigationStyle": "custom", "navigationBarTitleText": "我的" }
+      "path": "pages/unit/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "事项详情",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/uploads/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "上传中心",
+        "enablePullDownRefresh": true
+      }
     },
     {
       "path": "pages/report/index",
@@ -31,18 +43,15 @@
       }
     },
     {
-      "path": "pages/detail/index",
+      "path": "pages/entry/index",
       "style": {
         "navigationStyle": "custom",
         "navigationBarTitleText": "记录详情"
       }
     },
     {
-      "path": "pages/settings/index",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "项目服务"
-      }
+      "path": "pages/profile/index",
+      "style": { "navigationStyle": "custom", "navigationBarTitleText": "我的" }
     },
     {
       "path": "pages/ledger/index",
@@ -50,6 +59,13 @@
         "navigationStyle": "custom",
         "navigationBarTitleText": "项目工作台账",
         "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/settings/index",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "项目服务"
       }
     },
     {
@@ -84,10 +100,16 @@
         "selectedIconPath": "static/home-active.png"
       },
       {
-        "pagePath": "pages/records/index",
-        "text": "施工记录",
-        "iconPath": "static/records.png",
-        "selectedIconPath": "static/records-active.png"
+        "pagePath": "pages/units/index",
+        "text": "事项",
+        "iconPath": "static/icons/turbine.png",
+        "selectedIconPath": "static/icons/turbine-active.png"
+      },
+      {
+        "pagePath": "pages/uploads/index",
+        "text": "上传",
+        "iconPath": "static/icons/refresh.png",
+        "selectedIconPath": "static/icons/refresh-active.png"
       },
       {
         "pagePath": "pages/profile/index",
